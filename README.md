@@ -146,18 +146,3 @@ To run unit tests:
 ```bash
 pytest tests/
 ```
-
-
-
-## Submission Process
-- Push the code to a private GitHub repository.  
-- Share repository access with `vatsal@pulsegen.io`.  
-- Include a short demo video (maximum 5 minutes) explaining:
-  - How the agent works  
-  - How to use it via API and CLI  
-  - Any limitations and areas for improvement  
-
-
-
-## Contact and Support
-For any issues, please contact `your_email@example.com` or create a GitHub issue.
