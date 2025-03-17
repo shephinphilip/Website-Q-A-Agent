@@ -3,6 +3,7 @@ import requests
 import time
 import json
 import os
+import re
 import hashlib
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -199,14 +200,11 @@ class Indexer:
 class QASystem:
     """
     Answers user queries based on indexed documentation.
-    
-    This class uses the indexer to retrieve relevant chunks and a pre-trained
-    question-answering model to extract answers from these chunks.
     """
     def __init__(self, indexer):
         """
         Initializes the QASystem with the indexer and sets up the QA pipeline.
-        
+
         Args:
             indexer (Indexer): The indexer containing the FAISS index and chunks.
         """
@@ -216,33 +214,41 @@ class QASystem:
     def answer(self, question, k=5, threshold=0.5):
         """
         Generates an answer to the user's question from the most relevant chunks.
-        
+
         This method retrieves the top-k relevant chunks using the indexer,
-        applies the QA model to each chunk, and selects the answer with the highest
-        confidence score. If the score is above the threshold, it returns the answer
-        and source URL; otherwise, it returns None.
-        
+        applies the QA model to each chunk, and returns multiple relevant responses.
+
         Args:
             question (str): The user's question.
             k (int, optional): The number of top chunks to consider. Defaults to 5.
             threshold (float, optional): The minimum confidence score for an answer. Defaults to 0.5.
-        
+
         Returns:
-            tuple: (answer, source) if a valid answer is found, else (None, None).
+            list: A list of relevant answers with sources.
         """
         chunks = self.indexer.search(question, k)
-        best_answer = None
-        best_score = -1
-        best_source = None
+        answers = []
+        
         for chunk in chunks:
             result = self.qa_pipeline(question=question, context=chunk['text'])
-            if result['score'] > best_score:
-                best_score = result['score']
-                best_answer = result['answer']
-                best_source = chunk['url']
-        if best_score >= threshold:
-            return best_answer, best_source
-        return None, None
+            if result['score'] >= threshold:
+                answers.append({
+                    "answer": result['answer'],
+                    "source": chunk['url'],
+                    "confidence": result['score']
+                })
+
+        # If no relevant answers are found
+        if not answers:
+            return [{"answer": "Sorry, I couldn't find any information about that.", "source": None}]
+        
+        # If a step-by-step guide is detected (checks for "Step", "1.", "2." in content)
+        for chunk in chunks:
+            if any(keyword in chunk['text'].lower() for keyword in ["step", "1.", "2.", "instructions"]):
+                return [{"answer": chunk['text'], "source": chunk['url']}]
+
+        return answers
+
 
 # ------------- Global Variables and Setup for FastAPI ------------------
 
@@ -363,11 +369,11 @@ def ask(question: str):
     if qa_system is None:
         raise HTTPException(status_code=400, detail="Q&A system is not initialized. Please run /setup first.")
     
-    answer, source = qa_system.answer(question)
-    if answer:
-        return {"answer": answer, "source": source}
+    answers = qa_system.answer(question)
+    if answers:
+        return {"answer": answers}
     else:
-        return {"answer": "Sorry, I couldn't find any relevant information.", "source": None}
+        return {"answer": "Sorry, I couldn't find any relevant information."}
 
 # ------------- Main Function for CLI ------------------
 
