@@ -7,3 +7,6 @@ transformers
 torch
 fastapi
 uvicorn
+lxml[html_clean]
+pytest
+httpx
