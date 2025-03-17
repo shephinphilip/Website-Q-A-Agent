@@ -5,5 +5,5 @@ sentence-transformers
 faiss-cpu 
 transformers 
 torch
-selenium
-webdriver-manager
+fastapi
+uvicorn
