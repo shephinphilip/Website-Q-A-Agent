@@ -157,6 +157,6 @@ pytest tests/
 
 ### Demo Video
 Watch the demo video to see the project in action:  
-[Watch the demo](https://github.com/shephinphilip/Website-Q-A-Agent/blob/main/demo/Website-QA.mp4)
+https://github.com/shephinphilip/Website-Q-A-Agent/blob/main/demo/Website-QA.mp4
 
 If the video does not play, **[click here to download](https://github.com/shephinphilip/Website-Q-A-Agent/blob/main/demo/Website-QA.mp4)**
