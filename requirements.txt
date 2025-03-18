@@ -12,6 +12,6 @@ pytest
 httpx
 docker
 markdown==3.4.1
-PyPDF2==3.0.1
+pypdf
 cachetools==5.3.0
 numpy==1.23.5

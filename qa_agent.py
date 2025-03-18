@@ -14,7 +14,7 @@ import numpy as np
 from transformers import pipeline
 from fastapi import FastAPI, HTTPException, Query
 import markdown
-import PyPDF2
+import pypdf
 from cachetools import TTLCache
 from typing import List, Dict, Optional, Tuple
 
@@ -38,7 +38,7 @@ def extract_sections(soup):
 def extract_text_from_pdf(file_path: str) -> str:
     """Extracts text from a PDF file."""
     with open(file_path, 'rb') as f:
-        reader = PyPDF2.PdfReader(f)
+        reader = pypdf.PdfReader(f)
         text = ""
         for page in reader.pages:
             text += page.extract_text() or ""
