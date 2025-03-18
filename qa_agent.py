@@ -70,10 +70,11 @@ class Crawler:
             print(f"URL check failed for {url}: {e}")
             return False
 
-    def crawl(self, url: str, visited: set = None, depth: int = 0) -> List[Dict]:
-        """Recursively scrapes the website."""
-        if not self.check_url_exists(url):
-            raise ValueError(f"URL {url} is not reachable or does not exist.")
+    def crawl(self, url: str, visited: set = None, depth: int = 0, is_base_url: bool = False) -> List[Dict]:
+        """Recursively scrapes the website, strict check only for base URL."""
+        # Only enforce existence check for the initial base URL
+        if is_base_url and not self.check_url_exists(url):
+            raise ValueError(f"Base URL {url} is not reachable or does not exist.")
         
         if visited is None:
             visited = set()
@@ -83,6 +84,7 @@ class Crawler:
         visited.add(url)
         print(f"Crawling: {url} (Depth: {depth})")
 
+        documents = []
         for attempt in range(3):
             try:
                 response = requests.get(url, timeout=10)
@@ -91,10 +93,11 @@ class Crawler:
             except requests.exceptions.RequestException as e:
                 if attempt == 2:
                     print(f"Failed to crawl {url} after 3 attempts: {e}")
-                    return []
+                    return []  # Skip this URL, don’t raise error
                 time.sleep(2)
+        else:
+            return []  # If all attempts fail, skip silently
 
-        documents = []
         content_type = response.headers.get('content-type', '').lower()
         
         if 'text/html' in content_type:
@@ -158,7 +161,7 @@ class Indexer:
     def __init__(self, documents: List[Dict]):
         self.documents = documents
         self.chunks = []
-        self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')  # Optimize for CPU
+        self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
         self.faiss_index = None
         self.build_index()
 
@@ -177,10 +180,10 @@ class Indexer:
             raise ValueError("No valid content found to index.")
 
         texts = [chunk['text'] for chunk in self.chunks]
-        embeddings = self.model.encode(texts, batch_size=32, show_progress_bar=True)  # Batch processing
+        embeddings = self.model.encode(texts, batch_size=32, show_progress_bar=True)
         dimension = embeddings.shape[1]
-        self.faiss_index = faiss.IndexFlatIP(dimension)  # Inner Product for cosine similarity
-        faiss.normalize_L2(embeddings)  # Normalize for cosine similarity
+        self.faiss_index = faiss.IndexFlatIP(dimension)
+        faiss.normalize_L2(embeddings)
         self.faiss_index.add(embeddings)
 
     def search(self, query: str, k: int = 5) -> List[Dict]:
@@ -195,7 +198,7 @@ class QASystem:
     def __init__(self, indexer: Indexer):
         self.indexer = indexer
         self.qa_pipeline = pipeline('question-answering', model='distilbert-base-uncased-distilled-squad')
-        self.cache = TTLCache(maxsize=1000, ttl=3600)  # Cache up to 1000 answers for 1 hour
+        self.cache = TTLCache(maxsize=1000, ttl=3600)
 
     def is_general_question(self, question: str) -> bool:
         """Checks if the question is general."""
@@ -245,14 +248,16 @@ def is_valid_help_url(url: str) -> bool:
     parsed_url = urlparse(url)
     return parsed_url.scheme and parsed_url.netloc and ("help" in parsed_url.netloc or "/docs" in parsed_url.path)
 
-def setup_qa_system(urls: List[str]):
-    """Sets up the Q&A system with multiple documentation sources."""
+def setup_qa_system(urls: List[str]) -> Dict[str, str]:
+    """Sets up the Q&A system with multiple documentation sources, allowing partial success."""
     global qa_system
     all_documents = []
+    failed_urls = []
 
     for url in urls:
         if not is_valid_help_url(url):
-            raise ValueError(f"Invalid URL format: {url}. Must contain 'help' or '/docs'.")
+            failed_urls.append(f"Invalid URL format: {url}. Must contain 'help' or '/docs'.")
+            continue
 
         cache_filename = hashlib.md5(url.encode()).hexdigest() + '.json'
         if os.path.exists(cache_filename):
@@ -263,19 +268,24 @@ def setup_qa_system(urls: List[str]):
             print(f"Crawling {url}...")
             start_time = time.time()
             crawler = Crawler(url, max_depth=2)
-            documents = crawler.crawl(url)
-            if not documents:
-                raise ValueError(f"No content retrieved from {url}. URL may not exist or contain crawlable data.")
-            crawling_time = time.time() - start_time
-            print(f"Crawling {url} took {crawling_time:.2f} seconds")
-            with open(cache_filename, 'w', encoding='utf-8') as f:
-                json.dump(documents, f, ensure_ascii=False)
-            print(f"Saved crawled documents to {cache_filename}")
+            try:
+                documents = crawler.crawl(url, is_base_url=True)
+                if not documents:
+                    failed_urls.append(f"No content retrieved from {url}.")
+                    continue
+                crawling_time = time.time() - start_time
+                print(f"Crawling {url} took {crawling_time:.2f} seconds")
+                with open(cache_filename, 'w', encoding='utf-8') as f:
+                    json.dump(documents, f, ensure_ascii=False)
+                print(f"Saved crawled documents to {cache_filename}")
+            except ValueError as e:
+                failed_urls.append(str(e))
+                continue
 
         all_documents.extend(documents)
 
     if not all_documents:
-        raise ValueError("No content retrieved from any provided URLs.")
+        raise ValueError("No content retrieved from any provided URLs: " + "; ".join(failed_urls))
 
     print(f"Processing {len(all_documents)} sections from all sites.")
     print("Building index...")
@@ -286,6 +296,8 @@ def setup_qa_system(urls: List[str]):
     print(f"Indexed {len(indexer.chunks)} content chunks.")
     qa_system = QASystem(indexer)
     print("Q&A system is ready!")
+    
+    return {"message": f"Q&A system initialized with {len(all_documents)} documents.", "warnings": failed_urls if failed_urls else None}
 
 # ------------- FastAPI Server ------------------
 
@@ -302,8 +314,9 @@ def setup(url: str = Query(None, description="A single help website URL"),
     
     url_list = [url.strip()] if url else [u.strip() for u in urls.split(',') if u.strip()]
     try:
-        setup_qa_system(url_list)
-        return {"message": f"Q&A system initialized with {', '.join(url_list)}"}
+        result = setup_qa_system(url_list)
+        status_code = 200 if not result["warnings"] else 206  # Partial success
+        return {"message": result["message"], "warnings": result["warnings"]} if result["warnings"] else {"message": result["message"]}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -336,7 +349,10 @@ def main():
 
     url_list = [url.strip() for url in args.urls.split(',')]
     try:
-        setup_qa_system(url_list)
+        result = setup_qa_system(url_list)
+        print(result["message"])
+        if result["warnings"]:
+            print("Warnings:", "; ".join(result["warnings"]))
     except ValueError as e:
         print(f"Error: {e}")
         return

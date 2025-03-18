@@ -24,7 +24,7 @@ def test_faiss_indexing():
 
     assert len(results) > 0, "Search should return at least one result"
 
-    # The search returns a tuple (chunk_dict, distance)
+    # FAISS search returns (document_dict, similarity_score)
     result_data, _ = results[0]
     
     assert isinstance(result_data, dict), "Returned result should be a dictionary"
