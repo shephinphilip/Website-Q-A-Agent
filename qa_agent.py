@@ -10,21 +10,18 @@ from urllib.parse import urljoin, urlparse
 import trafilatura
 from sentence_transformers import SentenceTransformer
 import faiss
+import numpy as np
 from transformers import pipeline
 from fastapi import FastAPI, HTTPException, Query
+import markdown
+import PyPDF2
+from cachetools import TTLCache
+from typing import List, Dict, Optional, Tuple
 
-# ------------- Helper Function for Section Extraction ------------------
+# ------------- Helper Functions ------------------
 
 def extract_sections(soup):
-    """
-    Extracts sections from the BeautifulSoup object based on headings (h1 to h6).
-    
-    Args:
-        soup (BeautifulSoup): Parsed HTML content.
-    
-    Returns:
-        list: A list of dictionaries, each containing 'title' and 'content' for a section.
-    """
+    """Extracts sections from BeautifulSoup object based on headings (h1 to h6)."""
     sections = []
     current_section = None
     for element in soup.find_all(True):
@@ -36,31 +33,34 @@ def extract_sections(soup):
             current_section['content'].append(element.get_text().strip())
     if current_section:
         sections.append(current_section)
-    sections = [s for s in sections if s['content']]
-    return sections
+    return [s for s in sections if s['content']]
+
+def extract_text_from_pdf(file_path: str) -> str:
+    """Extracts text from a PDF file."""
+    with open(file_path, 'rb') as f:
+        reader = PyPDF2.PdfReader(f)
+        text = ""
+        for page in reader.pages:
+            text += page.extract_text() or ""
+    return text
+
+def extract_text_from_markdown(content: str) -> str:
+    """Converts Markdown to plain text."""
+    html = markdown.markdown(content)
+    soup = BeautifulSoup(html, 'html.parser')
+    return soup.get_text()
 
 # ------------- Classes for Crawling, Indexing, and QA ------------------
 
 class Crawler:
-    """
-    Handles recursive crawling of a website using BeautifulSoup.
-    """
-    def __init__(self, base_url, max_depth=2):
+    """Handles recursive crawling and content extraction from multiple formats."""
+    def __init__(self, base_url: str, max_depth: int = 2):
         self.base_url = base_url.rstrip('/')
         self.max_depth = max_depth
 
-    def check_url_exists(self, url):
-        """
-        Checks if the URL exists and is reachable.
-        
-        Args:
-            url (str): The URL to check.
-        
-        Returns:
-            bool: True if URL exists and is reachable, False otherwise.
-        """
+    def check_url_exists(self, url: str) -> bool:
+        """Checks if the URL is reachable."""
         try:
-            # Use HEAD request for efficiency, fall back to GET if HEAD fails
             response = requests.head(url, timeout=5, allow_redirects=True)
             if response.status_code >= 400:
                 response = requests.get(url, timeout=5, allow_redirects=True)
@@ -70,24 +70,11 @@ class Crawler:
             print(f"URL check failed for {url}: {e}")
             return False
 
-    def crawl(self, url, visited=None, depth=0):
-        """
-        Recursively scrapes the website starting from the given URL.
-        
-        Args:
-            url (str): The URL to start crawling from.
-            visited (set, optional): A set of visited URLs to avoid revisiting.
-            depth (int, optional): The current depth of crawling.
-        
-        Returns:
-            list: A list of dictionaries with 'url', 'page_title', 'section_title', and 'content'.
-        
-        Raises:
-            ValueError: If initial URL is not reachable or returns no content.
-        """
+    def crawl(self, url: str, visited: set = None, depth: int = 0) -> List[Dict]:
+        """Recursively scrapes the website."""
         if not self.check_url_exists(url):
             raise ValueError(f"URL {url} is not reachable or does not exist.")
-
+        
         if visited is None:
             visited = set()
         if url in visited or not url.startswith(self.base_url) or depth > self.max_depth:
@@ -107,32 +94,58 @@ class Crawler:
                     return []
                 time.sleep(2)
 
-        soup = BeautifulSoup(response.text, 'html.parser')
-        page_title = soup.title.string if soup.title else 'Untitled'
-
-        sections = extract_sections(soup)
         documents = []
-        for section in sections:
-            section_content = ' '.join(section['content'])
-            if section_content:
-                documents.append({
-                    'url': url,
-                    'page_title': page_title,
-                    'section_title': section['title'],
-                    'content': section_content
-                })
-
-        if not sections:
-            content = trafilatura.extract(response.text)
+        content_type = response.headers.get('content-type', '').lower()
+        
+        if 'text/html' in content_type:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            page_title = soup.title.string if soup.title else 'Untitled'
+            sections = extract_sections(soup)
+            for section in sections:
+                section_content = ' '.join(section['content'])
+                if section_content:
+                    documents.append({
+                        'url': url,
+                        'page_title': page_title,
+                        'section_title': section['title'],
+                        'content': section_content,
+                        'format': 'html'
+                    })
+            if not sections:
+                content = trafilatura.extract(response.text)
+                if content:
+                    documents.append({
+                        'url': url,
+                        'page_title': page_title,
+                        'section_title': 'Full Page',
+                        'content': content,
+                        'format': 'html'
+                    })
+        elif 'application/pdf' in content_type:
+            with open('temp.pdf', 'wb') as f:
+                f.write(response.content)
+            content = extract_text_from_pdf('temp.pdf')
+            os.remove('temp.pdf')
             if content:
                 documents.append({
                     'url': url,
-                    'page_title': page_title,
-                    'section_title': 'Full Page',
-                    'content': content
+                    'page_title': 'PDF Document',
+                    'section_title': 'Full Document',
+                    'content': content,
+                    'format': 'pdf'
+                })
+        elif 'text/markdown' in content_type or url.endswith('.md'):
+            content = extract_text_from_markdown(response.text)
+            if content:
+                documents.append({
+                    'url': url,
+                    'page_title': 'Markdown Document',
+                    'section_title': 'Full Document',
+                    'content': content,
+                    'format': 'markdown'
                 })
 
-        links = [urljoin(url, a['href']) for a in soup.find_all('a', href=True)]
+        links = [urljoin(url, a['href']) for a in BeautifulSoup(response.text, 'html.parser').find_all('a', href=True)] if 'text/html' in content_type else []
         doc_links = [link for link in links if link.startswith(self.base_url)]
 
         for link in doc_links:
@@ -141,112 +154,77 @@ class Crawler:
         return documents
 
 class Indexer:
-    """
-    Indexes documentation content from multiple sources for efficient querying.
-    """
-    def __init__(self, documents):
-        """
-        Initializes the Indexer with documents from multiple sources.
-        
-        Args:
-            documents (list): A list of document dictionaries.
-        """
+    """Indexes documentation content with performance optimizations."""
+    def __init__(self, documents: List[Dict]):
         self.documents = documents
         self.chunks = []
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')  # Optimize for CPU
+        self.faiss_index = None
         self.build_index()
 
     def build_index(self):
-        """
-        Builds a FAISS index from document sections.
-        """
+        """Builds a FAISS index with batch processing."""
         for doc in self.documents:
             self.chunks.append({
                 'text': doc['content'],
                 'url': doc['url'],
                 'page_title': doc['page_title'],
-                'section_title': doc['section_title']
+                'section_title': doc['section_title'],
+                'format': doc.get('format', 'html')
             })
 
         if not self.chunks:
             raise ValueError("No valid content found to index.")
 
         texts = [chunk['text'] for chunk in self.chunks]
-        embeddings = self.model.encode(texts, show_progress_bar=True)
+        embeddings = self.model.encode(texts, batch_size=32, show_progress_bar=True)  # Batch processing
         dimension = embeddings.shape[1]
-        self.faiss_index = faiss.IndexFlatL2(dimension)
+        self.faiss_index = faiss.IndexFlatIP(dimension)  # Inner Product for cosine similarity
+        faiss.normalize_L2(embeddings)  # Normalize for cosine similarity
         self.faiss_index.add(embeddings)
 
-    def search(self, query, k=5):
-        """
-        Searches for the top-k chunks most similar to the query.
-        
-        Args:
-            query (str): The user's query.
-            k (int, optional): Number of top chunks to retrieve.
-        
-        Returns:
-            list: Top-k chunks.
-        """
+    def search(self, query: str, k: int = 5) -> List[Dict]:
+        """Searches for top-k chunks using cosine similarity."""
         query_emb = self.model.encode([query])
+        faiss.normalize_L2(query_emb)
         distances, indices = self.faiss_index.search(query_emb, k)
-        return [self.chunks[i] for i in indices[0]]
+        return [(self.chunks[i], distances[0][j]) for j, i in enumerate(indices[0])]
 
 class QASystem:
-    """
-    Answers user queries based on indexed documentation.
-    """
-    def __init__(self, indexer):
-        """
-        Initializes the QASystem with the indexer and sets up the QA pipeline.
-        
-        Args:
-            indexer (Indexer): The indexer containing the FAISS index and chunks.
-        """
+    """Advanced QA system with caching and confidence scores."""
+    def __init__(self, indexer: Indexer):
         self.indexer = indexer
         self.qa_pipeline = pipeline('question-answering', model='distilbert-base-uncased-distilled-squad')
+        self.cache = TTLCache(maxsize=1000, ttl=3600)  # Cache up to 1000 answers for 1 hour
 
-    def is_general_question(self, question):
-        """
-        Checks if the question is general (e.g., "What is...?").
-        
-        Args:
-            question (str): The user's question.
-        
-        Returns:
-            bool: True if general, False otherwise.
-        """
+    def is_general_question(self, question: str) -> bool:
+        """Checks if the question is general."""
         general_patterns = [r"what is .*?", r"tell me about .*", r"explain .*"]
         return any(re.match(pattern, question.lower()) for pattern in general_patterns)
 
-    def answer(self, question, k=5, threshold=0.5):
-        """
-        Generates an answer to the user's question from the most relevant chunks.
-        
-        Args:
-            question (str): The user's question.
-            k (int, optional): Number of top chunks to consider.
-            threshold (float, optional): Minimum confidence score.
-        
-        Returns:
-            tuple: (answer, source) or (None, None) if no answer found.
-        """
-        chunks = self.indexer.search(question, k)
+    def answer(self, question: str, k: int = 5, threshold: float = 0.5) -> Tuple[Optional[str], Optional[str], Optional[float]]:
+        """Generates an answer with caching and confidence score."""
+        cache_key = hashlib.md5(question.encode()).hexdigest()
+        if cache_key in self.cache:
+            print(f"Cache hit for question: {question}")
+            answer, source, score = self.cache[cache_key]
+            return answer, source, score
+
+        chunks_with_scores = self.indexer.search(question, k)
         best_answer = None
         best_score = -1
         best_source = None
         best_chunk = None
 
         if self.is_general_question(question):
-            overview_chunks = [chunk for chunk in chunks 
-                              if "overview" in chunk['section_title'].lower() 
-                              or "introduction" in chunk['section_title'].lower()]
-            chunks = overview_chunks if overview_chunks else chunks
+            chunks_with_scores = [(chunk, score) for chunk, score in chunks_with_scores 
+                                  if "overview" in chunk['section_title'].lower() or "introduction" in chunk['section_title'].lower()] or chunks_with_scores
 
-        for chunk in chunks:
+        for chunk, _ in chunks_with_scores:
             result = self.qa_pipeline(question=question, context=chunk['text'])
-            if result['score'] > best_score:
-                best_score = result['score']
+            score = result['score']
+            if score > best_score:
+                best_score = score
                 best_answer = result['answer']
                 best_source = chunk['url']
                 best_chunk = chunk
@@ -254,32 +232,21 @@ class QASystem:
         if best_score >= threshold:
             if len(best_answer.split()) < 5:
                 best_answer = best_chunk['text']
-            return best_answer, best_source
-        return None, None
+            self.cache[cache_key] = (best_answer, best_source, best_score)
+            return best_answer, best_source, best_score
+        return None, None, 0.0
 
 # ------------- Global Variables and Setup ------------------
 
 qa_system = None
 
-def is_valid_help_url(url):
-    """
-    Checks if the URL is a valid help documentation site.
-    """
+def is_valid_help_url(url: str) -> bool:
+    """Checks if the URL is a valid help documentation site."""
     parsed_url = urlparse(url)
-    if not parsed_url.scheme or not parsed_url.netloc:
-        return False
-    return "help" in parsed_url.netloc or "/docs" in parsed_url.path
+    return parsed_url.scheme and parsed_url.netloc and ("help" in parsed_url.netloc or "/docs" in parsed_url.path)
 
-def setup_qa_system(urls):
-    """
-    Sets up the Q&A system by crawling and indexing multiple websites.
-    
-    Args:
-        urls (list): List of URLs to crawl and index.
-    
-    Raises:
-        ValueError: If any URL is invalid, unreachable, or yields no content.
-    """
+def setup_qa_system(urls: List[str]):
+    """Sets up the Q&A system with multiple documentation sources."""
     global qa_system
     all_documents = []
 
@@ -288,7 +255,6 @@ def setup_qa_system(urls):
             raise ValueError(f"Invalid URL format: {url}. Must contain 'help' or '/docs'.")
 
         cache_filename = hashlib.md5(url.encode()).hexdigest() + '.json'
-
         if os.path.exists(cache_filename):
             print(f"Loading cached documents from {cache_filename}")
             with open(cache_filename, 'r', encoding='utf-8') as f:
@@ -297,7 +263,7 @@ def setup_qa_system(urls):
             print(f"Crawling {url}...")
             start_time = time.time()
             crawler = Crawler(url, max_depth=2)
-            documents = crawler.crawl(url)  # This will raise ValueError if URL doesn't exist
+            documents = crawler.crawl(url)
             if not documents:
                 raise ValueError(f"No content retrieved from {url}. URL may not exist or contain crawlable data.")
             crawling_time = time.time() - start_time
@@ -314,10 +280,7 @@ def setup_qa_system(urls):
     print(f"Processing {len(all_documents)} sections from all sites.")
     print("Building index...")
     start_time = time.time()
-    try:
-        indexer = Indexer(all_documents)
-    except ValueError as e:
-        raise ValueError("Indexing failed: " + str(e))
+    indexer = Indexer(all_documents)
     indexing_time = time.time() - start_time
     print(f"Indexing took {indexing_time:.2f} seconds")
     print(f"Indexed {len(indexer.chunks)} content chunks.")
@@ -331,30 +294,13 @@ app = FastAPI()
 @app.get("/setup")
 def setup(url: str = Query(None, description="A single help website URL"), 
           urls: str = Query(None, description="Comma-separated list of help website URLs")):
-    """
-    API Endpoint to setup the Q&A system with a single URL or multiple URLs.
-    
-    Args:
-        url (str, optional): A single help website URL.
-        urls (str, optional): Comma-separated list of help website URLs.
-    
-    Returns:
-        dict: Success message indicating initialized URLs.
-    
-    Raises:
-        HTTPException: If input is invalid or setup fails.
-    """
+    """API Endpoint to setup the Q&A system."""
     if url is None and urls is None:
         raise HTTPException(status_code=400, detail="Either 'url' or 'urls' parameter must be provided.")
-    
     if url and urls:
         raise HTTPException(status_code=400, detail="Provide either 'url' or 'urls', not both.")
     
-    if url:
-        url_list = [url.strip()]
-    else:
-        url_list = [u.strip() for u in urls.split(',') if u.strip()]
-
+    url_list = [url.strip()] if url else [u.strip() for u in urls.split(',') if u.strip()]
     try:
         setup_qa_system(url_list)
         return {"message": f"Q&A system initialized with {', '.join(url_list)}"}
@@ -363,33 +309,27 @@ def setup(url: str = Query(None, description="A single help website URL"),
 
 @app.get("/ask")
 def ask(question: str):
-    """
-    API Endpoint to answer a user question.
-    
-    Args:
-        question (str): The user's question.
-    
-    Returns:
-        dict: Answer and source.
-    
-    Raises:
-        HTTPException: If system not initialized.
-    """
+    """API Endpoint to answer a question with confidence score."""
     if qa_system is None:
         raise HTTPException(status_code=400, detail="Q&A system not initialized. Please run /setup first.")
     
-    answer, source = qa_system.answer(question)
+    answer, source, confidence = qa_system.answer(question)
     if answer:
-        return {"answer": answer, "source": source}
-    else:
-        return {"answer": "Sorry, I couldn't find any relevant information.", "source": None}
+        return {"answer": answer, "source": source, "confidence": float(confidence)}
+    return {"answer": "Sorry, I couldn't find any relevant information.", "source": None, "confidence": 0.0}
+
+@app.get("/clear_cache")
+def clear_cache():
+    """API Endpoint to clear the answer cache."""
+    if qa_system is None:
+        raise HTTPException(status_code=400, detail="Q&A system not initialized.")
+    qa_system.cache.clear()
+    return {"message": "Cache cleared successfully."}
 
 # ------------- Main Function for CLI ------------------
 
 def main():
-    """
-    Runs the Q&A agent in CLI mode with multi-URL support.
-    """
+    """Runs the Q&A agent in CLI mode."""
     parser = argparse.ArgumentParser(description='Help Website Q&A Agent')
     parser.add_argument('--urls', required=True, help='Comma-separated list of help website URLs')
     args = parser.parse_args()
@@ -410,9 +350,9 @@ def main():
         if not question.strip():
             print("Please enter a valid question.")
             continue
-        answer, source = qa_system.answer(question)
+        answer, source, confidence = qa_system.answer(question)
         if answer:
-            print(f"**Answer:** {answer}\n**Source:** {source}")
+            print(f"**Answer:** {answer}\n**Source:** {source}\n**Confidence:** {confidence:.2f}")
         else:
             print("Sorry, I couldn't find any relevant information.")
 

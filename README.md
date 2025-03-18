@@ -1,50 +1,38 @@
 # Help Website Q&A Agent
 
 ## Overview
-This project is an AI-powered Question Answering (QA) Agent that crawls help documentation websites, indexes the content, and provides accurate answers to user queries.
+This project is an AI-powered Question Answering (QA) Agent that crawls, indexes, and retrieves answers from help documentation websites. It uses Natural Language Processing (NLP) and semantic search to extract and return the most relevant information in response to user queries.
 
-It uses natural language processing (NLP) and semantic search to retrieve relevant answers from documentation.
+The system supports multiple formats, including HTML, PDFs, and Markdown, and utilizes FAISS for fast similarity search.
 
-
-
-## Features
-- Accepts a help website URL as input (e.g., `help.zluri.com`).  
-- Crawls and indexes documentation content for efficient search.  
-- Accepts natural language questions via a command-line interface (CLI) and an API.  
-- Provides accurate answers based on the indexed documentation.  
-- Returns source references (URLs) for each answer.  
-- Includes error handling for invalid URLs and unsupported websites.  
-
-
+---
 
 ## Setup Instructions
 
 ### 1. Install Dependencies
-Ensure you have Python 3.8 or later installed.  
-Run the following command to install all required dependencies:
+Ensure you have Python 3.8+ installed. Then, install the required dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If `faiss-cpu` fails to install, use:
+If `faiss-cpu` fails to install, try:
+
 ```bash
 pip install faiss-cpu --no-cache-dir
 ```
 
+### 2. Start the FastAPI Server
+To run the API server:
 
-
-### 2. Run the FastAPI Server
-To start the API server, run:
 ```bash
 uvicorn qa_agent:app --host 0.0.0.0 --port 8000
 ```
-This will launch the FastAPI server on `http://localhost:8000/`.
 
+This will start the FastAPI server at `http://localhost:8000/`.
 
-
-### 3. Setup the QA System (Crawl and Index)
-Before asking questions, initialize the Q&A system by running:
+### 3. Setup the Q&A System (Crawl & Index)
+Before querying the system, initialize it by crawling a help documentation site:
 
 ```bash
 curl "http://localhost:8000/setup?url=https://help.com"
@@ -52,10 +40,8 @@ curl "http://localhost:8000/setup?url=https://help.com"
 
 This command will crawl and index the documentation.
 
-
-
-### 4. Ask Questions
-Once setup is complete, ask a question:
+### 4. Ask a Question
+Once the setup is complete, ask a question:
 
 ```bash
 curl "http://localhost:8000/ask?question=What integrations are available?"
@@ -65,84 +51,107 @@ Example Response:
 ```json
 {
     "answer": "You can integrate with Slack, Google Workspace, and Azure AD.",
-    "source": "https://help.zluri.com/docs/integrations-overview"
+    "source": "https://help.com/docs/integrations-overview",
+    "confidence": 0.92
 }
 ```
 
-
-
-## CLI Usage
-The agent can also be used in the terminal:
+### 5. Clear Cache (Optional)
+To remove cached responses and refresh the index:
 
 ```bash
-python main.py --url https://help.com
+curl "http://localhost:8000/clear_cache"
+```
+
+---
+
+## Dependencies
+This project relies on several libraries for crawling, indexing, and answering questions:
+
+- Requests – Fetches web pages and API data  
+- BeautifulSoup4 – Parses and extracts meaningful content from HTML  
+- Trafilatura – Extracts text from web pages while preserving formatting  
+- FAISS – Enables fast vector-based similarity search  
+- SentenceTransformers – Converts text into vector embeddings for semantic search  
+- Transformers – Provides NLP models for question answering  
+- FastAPI – Serves the API for querying the agent  
+- Uvicorn – ASGI server to run the FastAPI application  
+- PyPDF2 – Extracts text from PDF documentation  
+- CacheTools – Implements caching for faster responses  
+
+Install dependencies with:
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Usage Examples
+
+### Running in CLI Mode
+You can also interact with the system through a command-line interface:
+
+```bash
+python main.py --urls https://help.com
 ```
 
 Example Interaction:
 ```plaintext
 > What integrations are available?
 Answer: You can integrate with Slack, Google Workspace, and Azure AD.
-Source: https://help.zluri.com/docs/integrations-overview
+Source: https://help.com/docs/integrations-overview
+Confidence: 0.92
 ```
 
+Type "exit" to quit.
 
-
-## Dependencies
-- Python 3.8+
-- Requests - Used for HTTP requests to fetch web pages  
-- BeautifulSoup4 - Extracts meaningful content from HTML  
-- Trafilatura - Extracts text from HTML pages  
-- FAISS - Provides efficient vector-based similarity search  
-- SentenceTransformers - Converts text into embeddings for semantic search  
-- Transformers - NLP model for question answering  
-- FastAPI - Provides API endpoints for querying the agent  
-- Uvicorn - ASGI server to run the API  
-
-Install all dependencies using:
-```bash
-pip install -r requirements.txt
-```
-
-
-
-## Technical Architecture
-1. Crawler - Scrapes the help website and extracts relevant documentation.  
-2. Indexer - Converts the extracted content into semantic vector embeddings using FAISS.  
-3. QASystem - Uses semantic search to find relevant content and extracts answers using an NLP model (`distilbert-base-uncased-distilled-squad`).  
-4. API (FastAPI) - Provides endpoints to set up and query the agent.
-
-
+---
 
 ## Design Decisions
-- FAISS is used for fast retrieval instead of a full-text search database.  
-- A transformer-based NLP model is used instead of keyword-based search.  
-- FastAPI is implemented for scalability and ease of use.  
-- Caching and error handling are added to improve efficiency.  
 
+### Why FAISS for Search?
+FAISS is a highly efficient vector search library that provides fast similarity search compared to traditional full-text search databases.
 
+### Why Transformer Models for QA?
+Instead of relying on keyword-based search, DistilBERT and SentenceTransformers are used to understand the context of the question and extract precise answers.
+
+### Why FastAPI?
+FastAPI was chosen due to its performance, scalability, and built-in support for asynchronous processing, making it an ideal choice for handling multiple user queries efficiently.
+
+---
 
 ## Known Limitations
-- The system may not handle heavily JavaScript-rendered websites (e.g., sites requiring authentication).  
-- The accuracy of answers depends on how well-structured the documentation is.  
-- If the documentation is too small or lacks details, answers may not be meaningful.  
 
+### 1. Limited JavaScript Handling
+The system does not support JavaScript-heavy websites that require client-side rendering to load content. It only works with static HTML pages.
 
+### 2. Requires Well-Structured Documentation
+For accurate answers, documentation should be well-formatted and structured. Poorly formatted content may lead to less relevant responses.
 
-## Future Improvements
-- Support for PDF and Markdown documentation using `PyMuPDF` and `markdown-it-py`.  
-- Use Pinecone instead of FAISS for cloud-based scalable vector search.  
-- Improve answer ranking using a larger NLP model such as GPT-4.  
-- Add authentication support for private help documentation.  
-- Support API documentation crawling (e.g., OpenAPI specifications).  
+### 3. No Support for Private Documentation
+The system does not handle authentication-protected documentation. It only works with publicly accessible help sites.
 
+---
 
+## Future Enhancements
+- Support API documentation crawling (e.g., OpenAPI specifications)  
+- Improve search ranking using better NLP models  
+- Use a larger QA model (e.g., GPT-4) for more complex answers  
+- Integrate Pinecone for scalable cloud-based vector search  
+- Handle private documentation with authentication  
 
-## Testing Approach
-- Unit Tests - Validate crawling, indexing, and search functionality.  
-- Integration Tests - Ensure the system works end-to-end.  
-- Performance Benchmarks - Measure response times and optimize FAISS search.  
+---
 
-To run unit tests:
+## Testing and Benchmarking
+
+- Unit Tests - Validate crawling, indexing, and QA functionality  
+- Integration Tests - Ensure the system works as a whole  
+- Performance Benchmarks - Measure response times and optimize FAISS indexing  
+
+To run tests:
+
 ```bash
 pytest tests/
 ```
+
